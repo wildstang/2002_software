@@ -1,0 +1,1107 @@
+'main13apr.bsx 
+
+'{$STAMP BS2sx}
+
+'--------------------------------------------------------------------------------------
+' pot should be high to the left (counterclockwise) since joystick left is high
+' and crab motors should run low values to left. 
+
+
+'=============================================================================
+' User Constants 
+
+'kmk -- MAKE THIS STRICTER!! 
+TWITCH_THRESHOLD  CON 5  'how far the pots must move to pass the test.
+'lower is less strict (5 or greater will fail on a poorly tuned machine
+'but this is also a function of the turn time constants...)
+
+TRIM_ZONE  CON 1 'tolerance wherein trim is considered 'good'
+
+MT_OPEN    CON 254  'magic tongue door. 
+MT_CLOSED  CON 0
+
+'Threshold points for "analog" buttons. 
+ANALOG_TO_BUTTON_HIGH CON 200   'Any value above this is considered HIGH
+ANALOG_TO_BUTTON_LOW  CON 100   'Any value below this is considered LOW
+
+ENABLED          CON 1 
+DISABLED         CON 0 
+
+
+'=============================================================================
+'SHARED Constants (these are used by more than one bank and MUST AGREE in each) 
+
+REDUNDANCY    CON  DISABLED  'must be ENABLED or DISABLED 
+
+
+'=============================================================================
+'Constants for Scratchpad ram locations [0-62] (63 reserved)
+'(these constants are shared and must agree in all banks) 
+
+'(I just reserved these in the order they come in the serin stream)
+
+s_oi_swA	CON	0	
+s_oi_swB	CON	1
+s_rc_swA	CON	2
+'s_rc_swB	CON	3
+s_p2_x		CON	4
+s_p1_x		CON	5	'stored' value of p1_x
+s_p4_x		CON	6
+s_p3_x		CON	7
+s_PB_mode	CON	8
+'s_packet_num 	CON	9
+s_sensor1	CON	10	
+s_sensor2	CON	11	
+s_p2_y		CON	12	
+'s_p1_y		CON	13	'
+s_sensor3	CON	14	
+s_sensor4	CON	15	
+s_p4_y		CON	16	
+'s_p3_y		CON	17	'
+s_sensor5	CON	18	
+'s_sensor6	CON	19	'
+'s_p2_wheel	CON	20	'
+s_p1_wheel	CON	21	
+'s_sensor7	CON	22	'
+s_sensor8	CON	23	'bat_volt
+'s_p4_wheel	CON	24	'
+'s_p3_wheel	CON	25	'
+'s_p2_aux	CON	26	'
+s_p1_aux	CON	27	
+'s_p4_aux	CON	28	'
+'s_p3_aux	CON	29	'
+'s_delta_t	CON	30	'
+'s_res01	CON	31	'
+'(...end of possible serin inputs.  continue now, with outputs and 
+' stored user variables.) 
+'
+' ...insert any other storage names up to 62 that are useful... 
+
+s_gyro_trend  	CON	32
+
+s_gyro_straight CON	33	'wheel target that gyro thinks is straight 
+s_magictongue	CON	34
+
+s_loopcount 	CON	35 
+s_pot_bits  	CON	36	'bit field of pot health 
+
+'s_tank      	CON	37	'obsolete
+s_conveyor  	CON	38
+s_shooter  	CON	39
+
+s_relayA  	CON	40
+s_relayB	CON	41
+
+s_aux_left  	CON	42
+s_aux_right 	CON	43
+
+s_crab_broken 	CON	44	'kmk MAKE BIT feedback_broken in pot_bits. disable proportional steering pwms if 1
+
+s_front_crab  	CON	45 
+s_back_crab   	CON	46
+s_fcrab_target 	CON	47
+s_bcrab_target  CON	48
+
+s_lf_cur	CON	49
+s_rf_cur	CON	50
+s_lb_cur	CON	51
+s_rb_cur	CON	52
+
+s_lf_wheel	CON	53	'stored' value for left_wheel 
+s_rf_wheel	CON	54
+s_lb_wheel	CON	55
+s_rb_wheel	CON	56
+
+s_bat_volt	CON	57
+
+s_initialpot1	CON	58
+s_initialpot2	CON	59
+s_initialpot3	CON	60	'we COULD make these temporary to free up some memory..
+s_initialpot4	CON	61
+
+s_manybits	CON	62	'twitchdone/perspective/...
+
+s_banknumber	CON	63	'Read-Only
+
+' count backwards from 62.. the last address. 
+
+
+'========== DEFINE CONSTANTS (DO NOT CHANGE) =================================
+'=============================================================================
+' Baud rate for communications with User CPU
+OUTBAUD		CON	20	' (62500, 8N1, Noninverted)
+INBAUD		CON	20	' (62500, 8N1, Noninverted)
+
+USERCPU		CON	4
+'FPIN		CON	1
+COMA		CON	1
+COMB		CON	2
+'COMC		CON	3
+
+
+'========== DECLARE VARIABLES ================================================
+'=============================================================================
+'Note there are only 26 register variables available.
+
+'---------- Operator Interface (OI) - Analog Inputs --------------------------
+'Show all vars and all their aliases: 1st line of a group is
+'declaration (up to 26 of them) and rest of the group are all
+'the things alised to it (basically meaning that you can't
+'use them at the same time and expect them to be independent).
+'For example, don't alias any of the serin inputs together, or
+'any of the serout outputs, because they all need to be free
+'at the same time. 
+
+tmp1		VAR byte
+pwm11		VAR tmp1
+
+tmp2		VAR byte
+pwm9		VAR tmp2
+
+p1_x		VAR byte	'Port 1, X-axis on Joystick
+pwm1		VAR p1_x
+tmp3		VAR p1_x
+'
+' You must still be careful not to mix input and output vars in the
+' same region of code, for example: 
+'
+' pwm2 = p1_x / 2  ' could be confusing, because it has the side effect
+' of overwriting p2_x (aliased to pwm2.. although p2_x could be re-read
+' from s_p2_x if needed).  The recommended way of writing that would be: 
+' tmp1 = p1_x / 2
+' PUT s_pwm2, tmp1  '(pwm2 value is safely stored)
+
+p2_x		VAR byte	'Port 2, X-axis on Joystick
+pwm2		VAR p2_x
+tmp4		VAR p2_x
+
+p3_x		VAR byte	'Port 3, X-axis on Joystick
+pwm13		VAR p3_x
+tmp15		VAR p3_x
+
+p4_x		VAR byte	'Port 4, X-axis on Joystick
+pwm4		VAR p4_x
+tmp6		VAR p4_x
+
+'p1_y		VAR byte	'Port 1, Y-axis on Joystick
+pwm5		VAR byte
+tmp7		VAR pwm5
+
+p2_y		VAR byte	'Port 2, Y-axis on Joystick
+pwm6		VAR p2_y
+tmp8		VAR p2_y
+
+'p3_y		VAR byte	'Port 3, Y-axis on Joystick
+pwm7		VAR byte
+'tmp9		VAR p3_y
+
+p4_y		VAR byte	'Port 4, Y-axis on Joystick
+pwm8		VAR p4_y
+'tmp10		VAR p4_y
+
+p1_wheel	VAR byte	'Port 1, Wheel on Joystick
+pwm3		VAR p1_wheel
+tmp11		VAR p1_wheel
+
+'p2_wheel	VAR byte	'Port 2, Wheel on Joystick
+'pwm9		VAR byte
+'tmp12		VAR p2_wheel
+
+'p3_wheel	VAR byte	'Port 3, Wheel on Joystick
+'pwm12		VAR p3_wheel
+'tmp13		VAR p3_wheel
+
+'p4_wheel	VAR byte	'Port 4, Wheel on Joystick
+'pwm11		VAR byte
+'tmp14		VAR p4_wheel
+
+p1_aux		VAR byte	'Port 1, Aux on Joystick
+pwm10		VAR p1_aux
+tmp5		VAR p1_aux
+
+'p2_aux		VAR byte	'Port 2, Aux on Joystick
+'pwm14		VAR p2_aux
+'tmp16		VAR p2_aux
+
+'p3_aux		VAR byte	'Port 3, Aux on Joystick
+'pwm15		VAR p3_aux
+'tmp17		VAR p3_aux
+
+'p4_aux		VAR byte	'Port 4, Aux on Joystick
+'pwm16		VAR p4_aux
+'tmp18		VAR p4_aux
+
+
+
+'---------- Robot Controller (RC) - Analog Inputs ----------------------------
+
+sensor1		VAR byte	'RC Analog Input 1, connector pin 2
+sensor2		VAR byte	'RC Analog Input 2, connector pin 16
+sensor3		VAR byte	'RC Analog Input 3, connector pin 5
+sensor4		VAR byte	'RC Analog Input 4, connector pin 19
+sensor5		VAR byte	'RC Analog Input 5, connector pin 8
+'sensor6	VAR byte	'RC Analog Input 6, connector pin 22
+'sensor7	VAR byte	'RC Analog Input 7, connector pin 11
+bat_volt	VAR byte	'RC Analog Input 8, hardwired to the Battery
+				'Vin = ((4.7/14.7)* Battery voltage)-0.4
+				'Binary Battery Voltage = (Vin/5.0 V)*255
+
+'---------- Operator Interface - Digital Inputs ------------------------------
+
+' It's probably best NOT to alias digital inputs and outputs since
+' they use memory so efficiently and have many bit names.  and it 
+' will reduce the need to PUT and GET them...
+
+oi_swA		VAR byte	'OI Digital Switch Inputs 1 thru 8
+oi_swB		VAR byte	'OI Digital Switch Inputs 9 thru 16
+
+
+'---------- Robot Controller - Digital Inputs --------------------------------
+
+rc_swA		VAR byte	'RC Digital Inputs 1 thru 8
+'rc_swB		VAR byte	'RC Digital Inputs 9 thru 16
+
+
+'---------- Robot Controller - Digital Outputs -------------------------------
+
+relayA		VAR byte
+relayB		VAR byte
+
+
+'---------- Misc. ------------------------------------------------------------
+
+PB_mode		VAR byte
+'packet_num	VAR byte
+'delta_t	VAR byte
+
+
+pot_bits	VAR byte
+LBpot		VAR pot_bits.bit0	'0=ok, 1=broken 
+RBpot		VAR pot_bits.bit1
+LFpot		VAR pot_bits.bit2
+RFpot		VAR pot_bits.bit3
+Fpot_choice	VAR pot_bits.bit4	'1=left, 0=right
+Bpot_choice	VAR pot_bits.bit5
+Frange_bad	VAR pot_bits.bit6	'0=pots disagree, 1=ok. 
+Brange_bad	VAR pot_bits.bit7
+
+
+manybits	VAR byte 
+twitchdone	VAR manybits.bit0
+perspective	VAR manybits.bit1
+ovridetouched	VAR manybits.bit2 
+going_straight	VAR manybits.bit3	'1=trying to drive straight, 0=whatever
+first_loop	VAR manybits.bit4	'TRUE = 1st pass, FALSE = forever after
+
+
+'========== DEFINE ALIASES ===================================================
+'=============================================================================
+'  Aliases are variables which are sub-divisions of variables defined
+'  above.  Aliases don't require any additional RAM.
+
+'---------- Aliases for each OI switch input ---------------------------------
+'  Below are aliases for the digital inputs located on the Operator Interface.
+'  Ports 1 & 3 have their inputs duplicated in ports 4 & 2 respectively.  The 
+'  inputs from ports 1 & 3 may be disabled via the 'Disable' dip switch 
+'  located on the Operator Interface.  See Users Manual for details.
+
+p1_sw_trig	VAR oi_swA.bit0	'Joystick Trigger Button,	same as Port4 pin5 
+p1_sw_top	VAR oi_swA.bit1	'Joystick Top Button,		same as Port4 pin8
+p1_sw_aux1	VAR oi_swA.bit2	'Aux input,			same as Port4 pin9
+p1_sw_aux2	VAR oi_swA.bit3	'Aux input,			same as Port4 pin15
+
+p3_sw_trig	VAR oi_swA.bit4	'Joystick Trigger Button,	same as Port2 pin5 
+p3_sw_top	VAR oi_swA.bit5	'Joystick Top Button,		same as Port2 pin8
+p3_sw_aux1	VAR oi_swA.bit6	'Aux input,			same as Port2 pin9
+p3_sw_aux2	VAR oi_swA.bit7	'Aux input,			same as Port2 pin15
+
+p2_sw_trig	VAR oi_swB.bit0	'Joystick Trigger Button
+p2_sw_top	VAR oi_swB.bit1	'Joystick Top Button
+p2_sw_aux1	VAR oi_swB.bit2	'Aux input
+p2_sw_aux2	VAR oi_swB.bit3	'Aux input
+
+p4_sw_trig	VAR oi_swB.bit4	'Joystick Trigger Button
+p4_sw_top	VAR oi_swB.bit5	'Joystick Top Button
+p4_sw_aux1	VAR oi_swB.bit6	'Aux input
+p4_sw_aux2	VAR oi_swB.bit7	'Aux input
+
+
+'---------- Aliases for each RC switch input ---------------------------------
+'  Below are aliases for the digital inputs located on the Robot Controller.
+
+rc_sw1		VAR rc_swA.bit0
+rc_sw2		VAR rc_swA.bit1
+rc_sw3		VAR rc_swA.bit2
+rc_sw4		VAR rc_swA.bit3
+rc_sw5		VAR rc_swA.bit4
+rc_sw6		VAR rc_swA.bit5
+rc_sw7		VAR rc_swA.bit6
+rc_sw8		VAR rc_swA.bit7
+'rc_sw9		VAR rc_swB.bit0
+'rc_sw10	VAR rc_swB.bit1
+'rc_sw11	VAR rc_swB.bit2
+'rc_sw12	VAR rc_swB.bit3
+'rc_sw13	VAR rc_swB.bit4
+'rc_sw14	VAR rc_swB.bit5
+'rc_sw15	VAR rc_swB.bit6
+'rc_sw16	VAR rc_swB.bit7
+
+
+'---------- Aliases for each RC Relay outputs ---------------------------------
+'  Below are aliases for the relay outputs located on the Robot Controller.
+
+relay1_fwd	VAR RelayA.bit0
+relay1_rev	VAR RelayA.bit1
+relay2_fwd	VAR RelayA.bit2
+relay2_rev	VAR RelayA.bit3
+relay3_fwd	VAR RelayA.bit4
+relay3_rev	VAR RelayA.bit5
+relay4_fwd	VAR RelayA.bit6
+relay4_rev	VAR RelayA.bit7
+
+relay5_fwd	VAR RelayB.bit0
+relay5_rev	VAR RelayB.bit1
+relay6_fwd	VAR RelayB.bit2
+relay6_rev	VAR RelayB.bit3
+relay7_fwd	VAR RelayB.bit4
+relay7_rev	VAR RelayB.bit5
+relay8_fwd	VAR RelayB.bit6
+relay8_rev	VAR RelayB.bit7
+
+
+'---------- Aliases for the Pbasic Mode Byte (PB_mode) -----------------------
+'  The last bit of the PB_mode byte (aliased as comp_mode) indicates the status
+'  of the Competition Control, either Enabled or Disabled.  This indicates the
+'  starting and stopping of rounds at the competitions.  Comp_mode is the same
+'  as the "Disabled" LED on the Operator Interface.
+'  Comp_mode = 1 for Enabled, 0 for Disabled.
+
+comp_mode		VAR PB_mode.bit7
+
+
+'========== MAIN PROGRAM =====================================================
+'=============================================================================
+'K - runtime executable part begins about here. 
+
+'MainLoop: 
+'(this label doesn't get used anymore, we just get jumped into from the 
+'top each time through.)
+
+
+Gosub TwitchTest 
+
+Gosub WriteOutputs
+Gosub ReadInputs
+
+Gosub HandleButtons
+
+Run 2  'no return.. just jump to bank 2 (drive system) and
+'it will jump back to the top of this bank when done. 
+
+
+'=============================================================================
+'Note: code should never actually reach below this.. the other
+'bank's run command will restart this file at the top. 
+
+'Goto MainLoop:
+Stop
+
+'=============================================================================
+'=== Subroutines ===
+'=============================================================================
+
+'-----------------------------------------------------------------------------
+ReadInputs: 
+
+'---------- Serin Command - Get Data from Master uP --------------------------
+'  Construct the "serin" command using the following rules:
+'  1) There must be one variable for every input defined in the "Define Constants for Init" section.
+'  2) The order must match the order in the EXAMPLE SERIN COMMAND below.
+'  3) The total number of all variables may not exceed 26.
+'  4) Only use one "Serin" command.
+'  5) The Serin command must occupy one line.
+'
+'  If you see a BASIC INIT ERR on the Robot Controller after programming and pressing RESET, then
+'  there is a problem with the Serin command below.  Check the number of variables.  A BASIC INIT ERR
+'  will not occur if you have the variables in the wrong order, however your code will not work correctly.
+'
+'  EXAMPLE SERIN COMMAND
+'  This example exceed the 26 variable limit and is not on one line:
+'
+'  Serin COMA\COMB, INBAUD, [oi_swA,oi_swB,rc_swA,rc_swB,p2_x,p1_x,p4_x,p3_x,PB_mode,packet_num,sensor1,
+'				     sensor2,p2_y,p1_y,sensor3,sensor4,p4_y,p3_y,sensor5,sensor6,p2_wheel,p1_wheel,
+'				     sensor7,sensor8,p4_wheel,p3_wheel,p2_aux,p1_aux,p4_aux,p3_aux,delta_t,res01]
+'
+   Serin COMA\COMB, INBAUD, [oi_swA,oi_swB,rc_swA,p2_x,p1_x,p4_x,p3_x,PB_mode,sensor1,sensor2,p2_y,sensor3,sensor4,p4_y,sensor5,p1_wheel,bat_volt,p1_aux]
+
+' Mappings for 2002 inputs (added in 2004 so mappings may not be 100% accurate)
+'**************************************************************************************************************
+'* Analog inputs
+'* sensor1     Back crab
+'* sensor2     Front crab
+'* sensor3     Front crab
+'* sensor4     Back crab
+'*
+'* Digital switches
+'* rc_sw1      tank up sensor
+'* rc_sw2      pot debug
+'*
+'* Joystick Analog
+'* Input Var   Function
+'* p2_x        Drive X
+'* p2_y        Drive Y
+'* p4_x        Crab X
+'* p4_y        Tank throttle
+'*
+'* Joystick Digital
+'* Input VAR   Function
+'* p2_sw_top   Turbo
+'* p4_sw_trig  Manual crab front
+'* p4_sw_top   Manual crab back
+'*
+'* Button Box Analog
+'* Input VAR      Function
+'* p1_wheel       Conveyor (siwtch)
+'* p1_aux         Raise / Lower Tank (siwtch)
+'* p1_x           Magic Tongue (siwtch)
+'* p3_x           Manual crab mode
+'*
+'* Button Box Digital
+'* Input VAR      Function
+'* p1_sw_aux2     Front Hook In
+'* p1_sw_aux1     Front Hook Out
+'* p1_sw_top      Side Hook
+'* p1_sw_trig     Side Hook
+'* p1_sw_top      Side Hook
+'* p1_sw_trig     Side Hook
+'* p3_sw_aux1     Accumulator
+'* p3_sw_aux2     Accumulator
+'* p3_sw_trig     Shooter Out
+'* p3_sw_top      Shooter In
+'*
+'**************************************************************************************************************
+
+
+'debug ? sensor5   'gyro 
+
+'calibrate POT values
+'debug "sensor1/2= ", dec sensor1, " ", dec sensor2, CR  '*** 
+'debug "sensor1/2/3/4= ", dec sensor1, " ", dec sensor2, " ", dec sensor3, " ", dec sensor4, CR
+
+'Vin = ((4.7/14.7)* Battery voltage)-0.4
+'Binary Battery Voltage = (Vin/5.0 V)*255
+
+'kmk finish correcting w/0.4 
+'debug "voltage = ", dec ( (bat_volt*10) / 163), ".", dec ( (bat_volt*10) // 163), CR 
+
+'kmk do in units of 100, e.g. 12.0 = 120. 
+
+
+'send comp_bit to an output so the sniffer can tell when a match begins. 1=disabled
+'GET s_PB_mode, PB_mode
+Out15 = comp_mode 
+
+'Store ram vars in an un-aliased scratchpad location. This is helpful 
+'since independent subroutines may want to see the raw input data. 
+
+PUT s_oi_swA, oi_swA
+PUT s_oi_swB, oi_swB
+PUT s_rc_swA, rc_swA
+'PUT s_rc_swB, rc_swB
+PUT s_p2_x, p2_x
+PUT s_p1_x, p1_x  'store value of p1_x (in location s_p1_x) 
+PUT s_p4_x, p4_x
+PUT s_p3_x, p3_x
+PUT s_PB_mode, PB_mode
+PUT s_sensor1, sensor1 
+PUT s_sensor2, sensor2
+PUT s_sensor3, sensor3 
+PUT s_sensor4, sensor4
+PUT s_sensor5, sensor5
+PUT s_p2_y, p2_y
+PUT s_p4_y, p4_y
+PUT s_p1_wheel, p1_wheel
+PUT s_p1_aux, p1_aux
+
+'...add any other inputs as needed. 
+
+
+'---------- Blink BASIC RUN LED ----------------------------------------------
+Toggle 7			'Basic Run LED on the RC is toggled ON/OFF every loop.
+
+
+'--- show when joysticks are not near zero (a way to verify trim adjustment) 
+
+'if debug switch (on robot) is on, show pot centering, else show joystick trim centering
+GET s_rc_swA, rc_swA
+if(rc_sw2 = 1) then debugpots  '(also reads 0 when broken) 
+goto showtrims: 
+
+'--- show pot centering (kmk: maybe replace 127's with POT_CENTER) 
+debugpots: 
+Out14 = 1   'calibration mode LED is 14
+'Out15 = 1
+'debug "Calibration Mode on (see LEDs)", CR
+
+pled10:
+if (sensor2 < 127-TRIM_ZONE) or (sensor2 > 127+TRIM_ZONE) then pled10on
+Out10 = 0
+goto pled11
+pled10on:
+Out10 = 1
+
+pled11:
+if (sensor3 < 127-TRIM_ZONE) or (sensor3 > 127+TRIM_ZONE) then pled11on
+Out11 = 0
+goto pled12
+pled11on:
+Out11 = 1
+
+pled12:
+if (sensor1 < 127-TRIM_ZONE) or (sensor1 > 127+TRIM_ZONE) then pled12on
+Out12 = 0
+goto pled13
+pled12on:
+Out12 = 1
+
+pled13:
+if (sensor4 < 127-TRIM_ZONE) or (sensor4 > 127+TRIM_ZONE) then pled13on
+Out13 = 0
+goto showtrimsdone
+pled13on:
+Out13 = 1
+
+goto showtrimsdone: 
+
+
+'--- show joystick trim centering 
+showtrims:
+Out14 = 0
+'Out15 = 0
+
+tled10:
+if (p4_y < 127-TRIM_ZONE) or (p4_y > 127+TRIM_ZONE) then tled10on  'left joystick 
+Out10 = 0  'left y
+goto tled11
+tled10on:
+Out10 = 1
+
+tled11:
+if (p2_y < 127-TRIM_ZONE) or (p2_y > 127+TRIM_ZONE) then tled11on  'right joystick 
+Out11 = 0  'right y
+goto tled12
+tled11on:
+Out11 = 1
+
+tled12:
+if (p4_x < 127-TRIM_ZONE) or (p4_x > 127+TRIM_ZONE) then tled12on
+Out12 = 0  'left x
+goto tled13
+tled12on:
+Out12 = 1
+
+tled13:
+if (p2_x < 127-TRIM_ZONE) or (p2_x > 127+TRIM_ZONE) then tled13on
+Out13 = 0  'right x
+goto showtrimsdone
+tled13on:
+Out13 = 1
+
+showtrimsdone:
+
+return 
+
+'-----------------------------------------------------------------------------
+
+'========== OUTPUT DATA ======================================================
+
+WriteOutputs:
+
+' write the output vars with safe values, in case someone forgets
+' to update them from memory. 
+
+'pwm1 = 127 
+pwm2 = 127
+pwm3 = 127
+pwm4 = 127
+pwm5 = 127
+pwm6 = 127
+pwm7 = 127
+pwm8 = 127
+pwm9 = 127
+pwm10 = 127
+pwm11 = 127
+'pwm12 = 127
+pwm13 = 127
+'pwm14 = 127
+'pwm15 = 127
+'pwm16 = 127
+relayA = 0
+relayB = 0
+
+' Do the final output value GETs before writing to outputs. overwrite
+' the safe defaults. 
+
+' Don't map functionality to their outputs until this moment. (That
+' way if electrical changes their mind, we only need to change it here.)
+
+' Mappings for 2002 outputs
+
+GET s_lf_wheel,  pwm2
+GET s_rf_wheel, pwm5 
+GET s_lb_wheel,  pwm8
+GET s_rb_wheel, pwm9 
+
+GET s_front_crab, pwm3
+GET s_back_crab,  pwm4
+
+GET s_aux_left,  pwm7
+GET s_aux_right, pwm6
+
+GET s_conveyor, pwm10
+GET s_shooter, pwm11
+
+GET s_magictongue, pwm13
+
+
+'hook, tank lift, etc. 
+GET s_relayA, relayA  'all relay stuff done: write the relay output 
+GET s_relayB, relayB
+
+'*******************************************************************************************************************
+'color: relay
+'1 none
+'2 red/black      front hook
+'3 purple/black   raise and lower tank drive
+'4 brown/black    left side hook
+'5 orange/black   light
+'6 yellow/black   accumulator
+'7 grey/black     right side hook
+
+'color table of pwms
+'1 none           
+'2 red            front left drive
+'3 orange         front right drive
+'4 brown          back crab  
+'5 purple         front crab
+'6 yellow         tank drive right
+'7 grey           tank drive left
+'8 green          back left drive        
+'9 blue           back right drive
+'10 white         ball conveyor
+'11 black         ball shooter
+'*******************************************************************************************************************
+
+
+'=============================================================================
+'  The Serout line sends data to the Output uP.  The Output uP passes this to each PWM 1-16
+'  and Relay 1-8.  The Output uP will not output data if there is no communication with the
+'  Operator Interface or if the Competition Mode is Disabled.  Do not delete any elements
+'  from the Serout array.  Set unused PWM outputs to 127.  Set unused relay outputs to 0.
+'
+'  Serout USERCPU, OUTBAUD, [255,255,pwm1,relayA,pwm2,relayB,p3_y,p4_y,p1_x,p2_x,p3_x,p4_x,p1_wheel,p2_wheel,p3_wheel,p4_wheel,127,127,127,127]
+'  Serout USERCPU, OUTBAUD, [255,255,(PWM1),relayA,(PWM2),relayB,(PWM3),(PWM4),(PWM5),(PWM6),(PWM7),(PWM8),(PWM9),(PWM10),(PWM11),(PWM12),(PWM13),(PWM14),(PWM15),(PWM16)]
+
+'   Serout USERCPU, OUTBAUD, [255,255, pwm1, relayA, pwm2, relayB, pwm3,  pwm4,  pwm5,  pwm6,  pwm7,  pwm8,  pwm9,  pwm10,  pwm11,  pwm12,  pwm13,  pwm14,  pwm15,  pwm16]
+   Serout USERCPU, OUTBAUD, [255,255, 127, relayA, pwm2, relayB, pwm3,  pwm4,  pwm5,  pwm6,  pwm7,  pwm8,  pwm9,  pwm10,  pwm11,  127,  pwm13,  127,  127,  127]
+
+return
+
+
+
+'--------------------------------------------------------------------------------------
+'--------------------------------------------------------------------------------------
+HandleButtons:
+
+GET s_oi_swA, oi_swA  'ports 1&3 (button box) 
+GET s_oi_swB, oi_swB  'ports 2&4 (joystick buttons) 
+
+GET s_relayA, relayA 'get their current value in case they were written to somewhere else
+GET s_relayB, relayB 
+GET s_rc_swA, rc_swA 'robot sensors
+
+'turn light on
+relay5_rev = 0
+relay5_fwd = 1
+
+'debug "oi_swA = ", IBIN oi_swA, CR
+'debug "p3_sw_aux1/2 = ", dec p3_sw_aux1, " ", dec p3_sw_aux2, " "
+
+'Front Hook 
+relay2_rev = p1_sw_aux2 
+relay2_fwd = p1_sw_aux1 
+
+'side Hook ctrl 
+relay4_rev = p1_sw_top  
+relay4_fwd = p1_sw_trig
+relay7_rev = p1_sw_top 
+relay7_fwd = p1_sw_trig
+
+
+'ACCUMULATOR
+relay6_fwd = p3_sw_aux1
+relay6_rev = p3_sw_aux2
+
+
+'Shooter
+if p3_sw_trig = 1 then shootup:
+if p3_sw_top = 1 then shootdown:
+PUT s_shooter, 127
+goto shootdone: 
+
+shootdown:
+PUT s_shooter, 0  'to shoot out
+goto shootdone:
+
+shootup:
+PUT  s_shooter, 157 'slowing down the reverse to keep from stalling the motor
+goto shootdone:
+
+shootdone:
+
+
+
+'CONVEYOR
+'---------- Analogs to Buttons -----------------------------------------------
+'[comments from 2001] 
+' Analog inputs can be used as digital inputs by wiring them up as follows:
+'   5V----------------------
+'                            Switch ------- Analog Input
+'   100K resistor to 5V ----
+'
+'   So the following has the analog input floating when the switch is not pressed.
+'   Floating converts to 127.  Pulling it to 5V converts to 255.  Pulling it to
+'   the 100K resistor (with one end at 5V) converts to ~33
+'
+
+'----------- p1_wheel -> conveyor
+GET s_p1_wheel, p1_wheel
+
+if (p1_wheel < ANALOG_TO_BUTTON_HIGH) and (p1_wheel>ANALOG_TO_BUTTON_LOW) then stop_p1_wheel
+'else one of the buttons is pressed
+
+if (p1_wheel > ANALOG_TO_BUTTON_HIGH) then p1_wheel_convert_high
+'else it must be low
+PUT s_conveyor, 3      'conveyor down
+goto done_p1_wheel_convert
+
+p1_wheel_convert_high:   'p1_wheel high = conveyor up
+PUT s_conveyor, 254
+goto done_p1_wheel_convert
+
+stop_p1_wheel:
+PUT s_conveyor, 127
+goto done_p1_wheel_convert
+
+done_p1_wheel_convert:
+
+
+'--------------------------------------------------------------------------------------
+'TANK (aux) lift 
+GET s_p1_aux, p1_aux
+
+if rc_sw1 = 1 then tank_light_off  'tank fully up
+Out8 = 1
+goto tank_light_done
+
+tank_light_off:
+Out8 =0
+goto tank_light_done
+
+tank_light_done:
+
+if p1_aux<ANALOG_TO_BUTTON_HIGH and p1_aux>ANALOG_TO_BUTTON_LOW then stop_p1_aux
+'else one of the buttons is pressed
+if p1_aux>ANALOG_TO_BUTTON_HIGH then p1_aux_convert_high '(down)
+'else it must be low
+if rc_sw1 = 1 then stop_p1_aux  'upper tank limit switch
+relay3_fwd = 1  'tank up
+relay3_rev = 0
+goto done_p1_aux_convert
+
+p1_aux_convert_high:   'p1_aux high = tank down
+'if rc_sw2 =  1 then stop_p1_aux: '(no lower tank limit switch) 
+relay3_fwd = 0
+relay3_rev = 1
+goto done_p1_aux_convert
+
+stop_p1_aux: 
+relay3_fwd = 0
+relay3_rev = 0
+goto done_p1_aux_convert
+
+done_p1_aux_convert:
+
+
+
+'---MAGIC TONGUE---
+'momentary switch: center = reset, pressed either way = release. 
+
+GET s_p1_x, tmp1
+
+if (tmp1 < ANALOG_TO_BUTTON_LOW) or (tmp1 > ANALOG_TO_BUTTON_HIGH) then open_mt
+'else
+goto close_mt 
+
+open_mt:
+PUT s_magictongue, MT_OPEN
+goto mt_done
+
+close_mt: 
+PUT s_magictongue, MT_CLOSED
+goto mt_done
+
+mt_done:
+
+'-----------old tongue release----------
+'sticky & requires two buttons 
+'GET s_p1_x, tmp1
+'GET s_oi_swA, oi_swA
+'GET s_magictongue, tmp2
+'
+'if (tmp1 > ANALOG_TO_BUTTON_HIGH) then close_mt
+'
+'if (tmp2 = MT_OPEN) then mt_done  'if MT has been opened, leave it open. 
+'
+'if MT release AND side hook down are pressed, open mouth. 
+'if (tmp1 < ANALOG_TO_BUTTON_LOW) and (p1_sw_trig = 1) then open_mt
+'goto close_mt
+'--------------------------------------
+
+
+'--write all the switch outputs--
+
+PUT s_relayA, relayA  'write the relay outputs 
+PUT s_relayB, relayB  '(B not being used yet..)
+
+return
+'--------------------------------------------------------------------------------------
+
+
+'--------------------------------------------------------------------------------------
+TwitchTest:
+
+'kmk do we really need this here since it's also done below? (& considering we have initsysdone)
+GET s_manybits, manybits  'get twitchdone
+'debug ? twitchdone
+if twitchdone = 1 then twitchtestdone 'don't do after the first time
+
+'debug "running twitch test", CR
+
+Gosub ReadInputs 'must do a fresh ReadInputs because variable initialization cleared the PB_mode
+
+'note: could move this to top etc if you want it to run right at enable
+'comp_mode is PB_mode.bit7
+GET s_PB_mode, PB_mode
+if comp_mode = 1 then twitchstop  '1=disabled, don't run test if we know we'll fail 
+
+
+'read steering pot  (left is higher) 
+'turn left 5 loops
+'read pot
+'compare pot values to see if it's broken
+'turn right 5 loops
+
+PUT s_loopcount, 0  'initialize loop counter
+
+Gosub ReadInputs  
+
+GET s_sensor1, tmp3
+PUT s_initialpot1, tmp3  'save it for comparison 
+
+GET s_sensor2, tmp5
+PUT s_initialpot2, tmp5
+
+GET s_sensor3, tmp7
+PUT s_initialpot3, tmp7
+
+GET s_sensor4, tmp8
+PUT s_initialpot4, tmp8
+
+
+if (REDUNDANCY = ENABLED) then continue_twitch
+' don't do the twitch if feedback is broken because it just unaligns the wheels
+if((tmp3 = 0) or (tmp5 = 0) or (tmp3 >= 254) or (tmp5 >= 254)) then twitchtestdone
+continue_twitch:
+
+sui_loop: 
+
+GET s_manybits, manybits  'get twitchdone
+if twitchdone = 1 then twitchtestdone
+
+GET s_loopcount, tmp1
+
+if tmp1 < 45 then twitchleft
+if tmp1 = 45 then readleft
+if tmp1 < 215 then nexttwitch  'do nothing.. coast to stop
+if tmp1 < 250 then twitchright
+if tmp1 = 250 then twitchstop
+goto nexttwitch: 
+
+twitchleft:
+PUT s_front_crab, 127+55
+PUT s_back_crab, 127+55
+Gosub WriteOutputs
+goto nexttwitch
+
+twitchright:
+PUT s_front_crab, 127-55
+PUT s_back_crab, 127-55
+Gosub WriteOutputs
+goto nexttwitch
+
+readleft:
+PUT s_front_crab, 127 
+PUT s_back_crab, 127  
+Gosub WriteOutputs 
+Gosub ReadInputs
+
+GET s_sensor1, tmp4
+GET s_initialpot1, tmp3
+
+
+if (REDUNDANCY = DISABLED) then skip_redun
+'---------------------------------------------------------------
+'if position after left turn isn't more than TWITCH_THRESHOLD from where we started, it's bad
+if (tmp4 < tmp3+TWITCH_THRESHOLD) then pot1bad
+goto ckpot2
+
+pot1bad:
+LBpot = 0
+debug "left back pot bad", CR
+
+ckpot2: 
+GET s_sensor2, tmp4
+GET s_initialpot2, tmp3
+
+'if position after left turn isn't more than 5 from where we started, it's bad
+if (tmp4 < tmp3 +TWITCH_THRESHOLD) then pot1bad
+goto ckpot3
+
+pot2bad:
+LFpot = 0
+debug "left front pot bad", CR
+
+
+ckpot3: 
+GET s_sensor3, tmp4
+GET s_initialpot3, tmp3
+
+'if position after left turn isn't more than 5 from where we started, it's bad
+if (tmp4 < tmp3 +TWITCH_THRESHOLD) then pot1bad
+goto ckpot4
+
+pot3bad:
+RFpot = 0
+debug "right front pot bad", CR
+
+
+ckpot4: 
+GET s_sensor4, tmp4
+GET s_initialpot4, tmp3
+
+'if position after left turn isn't more than 5 from where we started, it's bad
+if (tmp4 < tmp3 +TWITCH_THRESHOLD) then pot1bad
+goto ckpotdone
+
+pot4bad:
+RBpot = 0
+debug "right back pot bad", CR
+
+
+ckpotdone: 
+
+
+
+GET s_sensor2, tmp3
+GET s_initialpot2, tmp5
+
+GET s_sensor3, tmp7
+GET s_initialpot3, tmp8
+
+'debug "initial 1 - sensor 1 = ", dec abs (tmp4 - tmp3), CR
+debug "front diff left = ", dec abs(tmp3-tmp5), " right = ", dec abs(tmp7-tmp8), CR
+
+if (abs(tmp3-tmp5) > abs(tmp7-tmp8)) then FLbetter
+Fpot_choice = 0  'right side is better
+goto checkbackrange
+
+FLbetter:
+Fpot_choice = 1  'left
+
+checkbackrange: 
+
+GET s_sensor1, tmp3
+GET s_initialpot1, tmp5
+
+GET s_sensor4, tmp7
+GET s_initialpot4, tmp8
+
+debug "back diff left = ", dec abs(tmp3-tmp5), " right = ", dec abs(tmp7-tmp8), CR
+
+if (abs(tmp3-tmp5) > abs(tmp7-tmp8)) then BLbetter
+Bpot_choice = 0  'right side is better
+goto checkrangedone
+
+BLbetter:
+Bpot_choice = 1
+
+checkrangedone: 
+
+debug ? Fpot_choice
+debug ? Bpot_choice
+'---------------------------------------------------------------
+skip_redun: 
+
+
+
+if (REDUNDANCY = ENABLED) then skip_nonred
+'----------------------------------------------------------------
+GET s_sensor2, tmp6
+GET s_initialpot2, tmp5
+
+if((tmp4 > tmp3) and (tmp6 > tmp5)) then nexttwitch  'new is larger so ok..
+PUT s_crab_broken, 1  'not ok.. Broken! 
+debug CR, "I think I'm broken!!", CR
+'----------------------------------------------------------------
+skip_nonred:
+
+
+goto nexttwitch
+
+
+twitchstop:            'this is really the END of a test run. 
+PUT s_front_crab, 127  
+PUT s_back_crab, 127  
+Gosub WriteOutputs 
+'PUT s_twitchdone, 1  '1 means done. 
+
+GET s_manybits, manybits
+twitchdone = 1
+PUT s_manybits, manybits  'save twitchdone
+
+GET s_p3_x, tmp2  'the button for manual override
+if(tmp2 < ANALOG_TO_BUTTON_HIGH) then nomoprint   'no manual button
+debug "Notice: Manual Override button is engaged.", CR
+nomoprint:
+
+goto nexttwitch
+
+
+nexttwitch:
+'tmp1 = tmp1 + 1  'count loops 
+GET s_loopcount, tmp1 
+PUT s_loopcount, tmp1 + 1
+goto sui_loop:
+
+
+twitchtestdone: 
+
+PUT s_pot_bits, pot_bits  'kmk is this really suppose to put every time? 
+
+
+return
+
+'--------------------------------------------------------------------------------------
+
+'=eof=

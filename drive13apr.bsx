@@ -1,0 +1,896 @@
+'drive13apr.bsx 
+
+'{$STAMP BS2sx}
+'--------------------------------------------------------------------------------------
+
+
+'=============================================================================
+' User Constants 
+
+DRIVE_DEADZONE	CON 5  'joystick deadzone 
+
+DRIVE_SCL CON 50  'turbo drive speed reduction (percent) [e.g. 50]
+DRIVE_CON CON 64  '128 * reduction percent [e.g. 64] 
+
+CRABZONE  CON 10
+AUXZONE  CON 10
+
+'Threshold points for "analog" buttons. 
+ANALOG_TO_BUTTON_HIGH CON 200   'Any value above this is considered HIGH
+
+
+ENABLED          CON 1 
+DISABLED         CON 0 
+
+RESET_PROTECT CON  DISABLED  'must be ENABLED or DISABLED 
+
+
+'=============================================================================
+'SHARED Constants (these are used by more than one bank and MUST AGREE in each) 
+
+REDUNDANCY    CON  DISABLED  'must be ENABLED or DISABLED 
+
+
+'=============================================================================
+'Constants for Scratchpad ram locations [0-62] (63 reserved)
+'(these constants are shared and must agree in all banks) 
+
+'(I just reserved these in the order they come in the serin stream)
+
+s_oi_swA	CON	0	
+s_oi_swB	CON	1
+s_rc_swA	CON	2
+'s_rc_swB	CON	3
+s_p2_x	CON	4
+s_p1_x	CON	5	'stored' value of p1_x
+s_p4_x	CON	6
+s_p3_x	CON	7
+s_PB_mode	CON	8
+'s_packet_num CON	9
+s_sensor1	CON	10	
+s_sensor2	CON	11	
+s_p2_y	CON	12	
+'s_p1_y	CON	13	'
+s_sensor3	CON	14	
+s_sensor4	CON	15	
+s_p4_y	CON	16	
+'s_p3_y	CON	17	'
+s_sensor5	CON	18	
+'s_sensor6	CON	19	'
+'s_p2_wheel	CON	20	'
+s_p1_wheel	CON	21	
+'s_sensor7	CON	22	'
+s_sensor8	CON	23	'bat_volt
+'s_p4_wheel	CON	24	'
+'s_p3_wheel	CON	25	'
+'s_p2_aux	CON	26	'
+s_p1_aux	CON	27	
+'s_p4_aux	CON	28	'
+'s_p3_aux	CON	29	'
+'s_delta_t	CON	30	'
+'s_res01	CON	31	'
+'(...end of possible serin inputs.  continue now, with outputs and 
+' stored user variables.) 
+'
+' ...insert any other storage names up to 62 that are useful... 
+
+s_gyro_trend  CON 32
+
+s_gyro_straight  CON 33  'wheel target that gyro thinks is straight 
+s_magictongue	CON 34
+
+s_loopcount CON 35 
+s_pot_bits  CON 36   'bit field of pot health 
+
+'s_tank      CON 37   'obsolete
+s_conveyor  CON 38
+s_shooter   CON 39
+
+s_relayA   CON 40
+s_relayB   CON 41
+
+s_aux_left   CON 42
+s_aux_right  CON 43
+
+s_crab_broken  CON 44  'kmk make bit pot_broken. disable proportional steering pwms if 1
+
+s_front_crab   CON 45 
+s_back_crab    CON 46
+
+s_fcrab_target  CON 47
+s_bcrab_target  CON 48
+
+s_lf_cur  CON 49
+s_rf_cur  CON 50
+s_lb_cur  CON 51
+s_rb_cur  CON 52
+
+s_lf_wheel  CON	53	'stored' value for left_wheel 
+s_rf_wheel  CON	54
+s_lb_wheel  CON   55
+s_rb_wheel  CON   56
+
+s_bat_volt  CON 57
+
+s_initialpot1  CON 58
+s_initialpot2  CON 59
+s_initialpot3  CON 60 'we COULD make these temporary to free up some memory..
+s_initialpot4  CON 61
+
+s_manybits  CON 62   'twitchdone/perspective/...
+
+s_banknumber CON 63  'Read-Only
+
+' count backwards from 62.. the last address. 
+
+
+'--------------------------------------------------------------------------------------
+
+tmp1        VAR byte	'temporary vars which are kept independent of anything else
+tmp2        VAR byte	'so they can be used _with_ anything else. 
+tmp3        VAR byte 
+tmp4        VAR byte 
+tmp5        VAR byte 
+tmp6        VAR byte 
+
+p2_x	VAR	byte	'Port 2, X-axis on Joystick
+p2_y	VAR	byte	'Port 2, Y-axis on Joystick
+p2_wheel	VAR	byte	'Port 2, Wheel on Joystick
+
+p4_x	VAR	byte	'Port 4, X-axis on Joystick
+p4_y	VAR	byte	'Port 4, Y-axis on Joystick
+'p4_wheel	VAR	byte	'Port 4, Wheel on Joystick
+
+'---------- Robot Controller (RC) - Analog Inputs ----------------------------
+
+
+'---------- Operator Interface - Digital Inputs ------------------------------
+' It's probably best NOT to alias digital inputs and outputs since
+' they use memory so efficiently and have many bit names.  and it 
+' will reduce the need to PUT and GET them...
+
+'oi_swA	VAR byte	'OI Digital Switch Inputs 1 thru 8
+oi_swB	VAR byte	'OI Digital Switch Inputs 9 thru 16
+
+
+rc_swA	VAR byte	'RC Digital Inputs 1 thru 8
+
+rc_sw1	VAR rc_swA.bit0
+rc_sw2	VAR rc_swA.bit1
+rc_sw3	VAR rc_swA.bit2
+rc_sw4	VAR rc_swA.bit3
+rc_sw5	VAR rc_swA.bit4
+rc_sw6	VAR rc_swA.bit5
+rc_sw7	VAR rc_swA.bit6
+rc_sw8	VAR rc_swA.bit7
+
+
+pot_bits    VAR byte
+LBpot       VAR pot_bits.bit0  '0=ok, 1=broken 
+RBpot       VAR pot_bits.bit1
+LFpot       VAR pot_bits.bit2
+RFpot       VAR pot_bits.bit3
+Fpot_choice VAR pot_bits.bit4  '1=left, 0=right
+Bpot_choice VAR pot_bits.bit5
+Frange_bad  VAR pot_bits.bit6  '0=pots disagree, 1=ok. 
+Brange_bad  VAR pot_bits.bit7
+
+
+manybits     VAR byte 
+twitchdone   VAR manybits.bit0
+perspective   VAR manybits.bit1
+ovridetouched VAR manybits.bit2 
+going_straight VAR manybits.bit3  '1=trying to drive straight, 0=whatever
+first_loop     VAR manybits.bit4  'TRUE = 1st pass, FALSE = forever after
+
+
+'---------- Misc. ------------------------------------------------------------
+
+PB_mode	VAR byte
+'packet_num	VAR byte
+'delta_t	VAR byte
+
+
+'========== DEFINE ALIASES ===================================================
+
+'---------- Aliases for each OI switch input ---------------------------------
+'  Below are aliases for the digital inputs located on the Operator Interface.
+'  Ports 1 & 3 have their inputs duplicated in ports 4 & 2 respectively.  The 
+'  inputs from ports 1 & 3 may be disabled via the 'Disable' dip switch 
+'  located on the Operator Interface.  See Users Manual for details.
+
+p2_sw_trig	VAR oi_swB.bit0	'Joystick Trigger Button
+p2_sw_top	VAR oi_swB.bit1	'Joystick Top Button
+p2_sw_aux1	VAR oi_swB.bit2	'Aux input
+p2_sw_aux2	VAR oi_swB.bit3	'Aux input
+
+p4_sw_trig	VAR oi_swB.bit4	'Joystick Trigger Button
+p4_sw_top	VAR oi_swB.bit5	'Joystick Top Button
+p4_sw_aux1	VAR oi_swB.bit6	'Aux input
+p4_sw_aux2	VAR oi_swB.bit7	'Aux input
+
+
+'---------- Aliases for the Pbasic Mode Byte (PB_mode) -----------------------
+'  The last bit of the PB_mode byte (aliased as comp_mode) indicates the status
+'  of the Competition Control, either Enabled or Disabled.  This indicates the
+'  starting and stopping of rounds at the competitions.  Comp_mode is the same
+'  as the "Disabled" LED on the Operator Interface.
+'  Comp_mode = 1 for Enabled, 0 for Disabled.
+
+comp_mode		VAR PB_mode.bit7
+
+
+'--------------------------------------------------------------------------------------
+
+'bank_number VAR byte
+'GET 63, bank_number 
+'debug "now running in bank ", DEC bank_number, CR 
+
+
+'--------------------------------------------------------------------------------------
+'--------------------------------------------------------------------------------------
+'call DRIVE SYSTEM Routines
+
+'clear this (quad resets it if needed)
+GET s_manybits, manybits
+going_straight = 0  '1=trying to drive straight, 0=whatever
+PUT s_manybits, manybits
+
+
+'----- Dead Zones
+'create a bit of a DEAD ZONE on the Y axis.. less jumpy
+GET s_p2_y, p2_y
+if p2_y > 127+DRIVE_DEADZONE or p2_y < 127-DRIVE_DEADZONE then p2_y_outofzone
+'else
+PUT s_p2_y, 127 'stick the input back to center
+p2_y_outofzone:
+
+
+'--no deadzone no X so we can precision steer on takeoff..
+''create a bit of a DEAD ZONE on the X axis.. easier to drive straight. 
+'GET s_p2_x, p2_x
+'if p2_x > 127+DRIVE_DEADZONE or p2_x < 127-DRIVE_DEADZONE then p2_x_outofzone
+''else
+' PUT s_p2_x, 127 'stick the input back to center
+'p2_x_outofzone:
+
+
+Gosub PotTests  'various checks for broken pots
+
+Gosub Inverse
+
+
+'--- Do Manual Override (if crab broken or manual override button pressed...)
+GET s_p3_x, tmp2  'the button for manual override (reads 127 when _broken_, so use 137 as the detect threshold) 
+'if(tmp2 < 137) then check_crab  'no manual button
+if(tmp2 < ANALOG_TO_BUTTON_HIGH) then check_crab  'no manual button
+
+GET s_manybits, manybits
+ovridetouched = 1  '1 means manual override button has been pressed at some point
+PUT s_manybits, manybits  'save ovridetouched 
+goto yes_manual
+
+check_crab: 
+GET s_crab_broken, tmp1
+if(tmp1 = 0) then no_manual  '0 means pot not broken
+
+yes_manual: 
+Gosub ManuOverride
+goto drivedone: 
+no_manual:
+
+'------------------------------------------
+
+GET s_p4_x, p4_x
+GET s_p2_y, p2_y
+if (p4_x < 127-CRABZONE) or (p4_x > 127+CRABZONE) then crabmode 
+
+GET s_oi_swB, oi_swB  '(kmk is this obsolete?)
+
+'don't use spin mode if throttle is high. 
+'kmk - make this the same as Y deadzone? 
+'comment out this line to disable spin
+if (p2_y > 111) and (p2_y < 143) then tankspinmode 
+'else
+Gosub QuadDrive
+goto drivedone
+
+tankspinmode:
+PUT s_fcrab_target, 127  '127 IS joystick center (POT_CENTER is only used by feedback routine)
+PUT s_bcrab_target, 127  'hold wheels straight 
+Gosub TankDrive
+goto drivedone
+
+crabmode:
+Gosub CrabDrive
+drivedone:
+
+Gosub AuxDrive
+
+
+Run 3  'no return.. just jump to bank 3 (feedback & acceleration) 
+'(it will jump back to main when done). 
+
+'======================================================================================
+
+'-----------------------------------------------------------------------------
+TankDrive:  'this routine handles spin mode and all Manual Override driving
+
+'Single Stick drive:
+
+GET s_p2_y, p2_y
+GET s_p2_x, p2_x
+
+p2_x = p2_x MAX 187 MIN 67  'limit the spin power
+
+GET s_p3_x, tmp2  'the button for manual override
+if(tmp2 < ANALOG_TO_BUTTON_HIGH) then lowspinpower:  'no manual button
+p2_x = p2_x MAX 245 MIN 10  'high power in crisis situations 
+lowspinpower:
+
+
+'(our left & right TURNS are switched and we're using other stick..)
+'right_wheel
+tmp2 = (((((2000 + p2_y - p2_x + 127) Min 2000 Max 2254) - 2000)) MAX 254)
+
+'left_wheel
+tmp1  = (((((2000 + p2_y + p2_x - 127) Min 2000 Max 2254) - 2000)) MAX 254)
+
+
+'--Undo inverse on tank spins (makes sense.. think about it.)
+
+'but...if you're in manual override, and actually trying to
+'drive, then don't undo ("reinverse") the perspective. 
+if (p2_y < 127-DRIVE_DEADZONE) or (p2_y > 127+DRIVE_DEADZONE) then noreinverse
+
+GET s_manybits, manybits  'get perspective
+if(perspective = 0) then noreinverse  '0 means forward perspective
+
+tmp2 = (255-tmp2)
+tmp1 = (255-tmp1)
+
+noreinverse: 
+
+PUT s_rf_wheel, tmp1 
+PUT s_rb_wheel, tmp1 
+PUT s_lf_wheel, tmp2
+PUT s_lb_wheel, tmp2
+
+return 
+'-----------------------------------------------------------------------------
+
+
+'-----------------------------------------------------------------------------
+QuadDrive: 
+
+GET s_p2_x, p2_x      ' right joystick (left is higher) 
+
+'debug "before = ", dec p2_x
+
+if (p2_x < 64) then leftslope:
+if (p2_x < 192) then midslope:
+if (p2_x < 255) then rightslope:
+
+'-----3/16ths slope
+leftslope:
+p2_x = (((5*p2_x)/16) + 96)
+goto slope_end:
+
+midslope:
+p2_x = ((3*p2_x/16) + 108)
+goto slope_end:
+
+rightslope:
+p2_x = (((5*p2_x)/16) + 80)
+goto slope_end
+
+slope_end:
+''-----end 3/16ths 
+
+
+'-----eighth slope
+'leftslope:
+'p2_x = (((3*p2_x)/8) + 96)
+'goto slope_end:
+'
+'midslope:
+'p2_x = ((p2_x/8) + 112)
+'goto slope_end:
+'
+'rightslope:
+'p2_x = (((3*p2_x)/8) + 56)
+'goto slope_end
+'
+'slope_end:
+''-----end eighth
+
+'-----linear steering, with wheel limit of 45 degrees (slope = 1/2)
+'p2_x = (p2_x / 4) + 96
+'p2_x = ( (p2_x MIN 64 MAX 192) / 8) + 112
+'-----end linear 
+
+'debug " after = ", dec p2_x, CR
+
+
+PUT s_fcrab_target, p2_x
+PUT s_bcrab_target, (255-p2_x)
+
+
+'----------------------------
+'if turbo is pressed, keep trailing [sic] wheels straight (helps minimize driver overcorrection)
+GET s_oi_swB, oi_swB  ' joystick buttons  (1 is pressed) 
+
+if (p2_sw_top = 0) then straighten_done  'no turbo...
+
+GET s_p2_y, p2_y      ' right joystick
+if (p2_y => 127) then straighten_back:
+'else
+goto straighten_front: 
+
+straighten_back:
+PUT s_bcrab_target, 127 
+
+' 'if trying to go straight & forward in quad drive 
+' 'this is easier than checking mode later (it gets cleared at top of drive loop) 
+' GET s_manybits, manybits
+' going_straight = 1  '1=trying to drive straight & forward, 0=whatever
+' PUT s_manybits, manybits
+goto straighten_done:
+
+straighten_front:
+PUT s_fcrab_target, 127 
+
+straighten_done:
+
+
+'----------------------------
+'Do differential wheel speeds 
+
+GET s_p2_x, p2_x      ' right joystick (left is higher) 
+GET s_p2_y, p2_y      ' right joystick throttle
+
+'GET s_oi_swB, oi_swB  ' joystick buttons  (1 is pressed) 
+'if turbo is pressed, don't slow any wheels
+if (p2_sw_top = 1) then nodiff_speeds: 
+goto diff_speeds:
+
+nodiff_speeds: 
+PUT s_rf_wheel, p2_y 
+PUT s_rb_wheel, p2_y 
+PUT s_lf_wheel, p2_y 
+PUT s_lb_wheel, p2_y 
+goto diff_done: 
+
+
+diff_speeds:
+
+if(p2_x > 127) then slowleft
+goto slowright
+
+'to avoid underflow in slowdown calculations: 
+'add 2000 to y so that you have larger number first
+'then add 1000 to 127 so that you have a larger number first
+'at the end subtract 1000 (2000-1000=1000)
+
+slowleft:
+PUT s_lf_wheel, ((p2_y +2000)- (1127- (((255- p2_x)/2)+64)) MIN 1000 MAX 1254)- 1000
+PUT s_lb_wheel, ((p2_y +2000)- (1127- (((255- p2_x)/2)+64)) MIN 1000 MAX 1254)- 1000
+PUT s_rf_wheel, p2_y 
+PUT s_rb_wheel, p2_y 
+goto diff_done: 
+
+slowright:
+PUT s_lf_wheel, p2_y 
+PUT s_lb_wheel, p2_y 
+PUT s_rf_wheel, ((p2_y +2000)- (1127- ((p2_x/2)+64)) MIN 1000 MAX 1254)- 1000
+PUT s_rb_wheel, ((p2_y +2000)- (1127- ((p2_x/2)+64)) MIN 1000 MAX 1254)- 1000
+goto diff_done: 
+
+diff_done: 
+
+Gosub AntiTurbo
+
+return 
+
+
+'-----------------------------------------------------------------------------
+ManuOverride: 
+
+out9 = 1 'LED light turn on
+
+GET s_manybits, manybits
+perspective = 0  'set perspective to front (otherwise override turn buttons keep switching perspective)
+PUT s_manybits, manybits  'save perspective 
+
+GET s_p4_x, p4_x      ' left joystick (left is higher) 
+GET s_oi_swB, oi_swB  ' joystick buttons  (1 is pressed) 
+
+'limit turn rate 
+p4_x = p4_x MIN (127-50) MAX (127+50)
+
+if p4_sw_trig = 1 then manu_front
+PUT s_front_crab, 127  'stop steering if button lifted
+goto manu_front_done
+
+manu_front: 
+PUT s_front_crab, p4_x 
+
+manu_front_done:
+
+if p4_sw_top = 1 then manu_back
+PUT s_back_crab, 127
+goto manu_done
+
+manu_back: 
+PUT s_back_crab, p4_x 
+
+manu_done: 
+
+''Don't limit using pots (except in test) because override may imply pot is broken. 
+''Gosub crab_limits  
+
+Gosub TankDrive  'just use differential turning in a crisis... 
+Gosub AntiTurbo
+
+return
+
+
+'-----------------------------------------------------------------------------
+CrabDrive: 
+
+'(the actual feedback is handled at the end of each main loop...) 
+
+GET s_p4_x, p4_x      ' left joystick (left is higher) 
+
+PUT s_fcrab_target, p4_x
+PUT s_bcrab_target, p4_x
+
+GET s_p2_y, p2_y      ' right joystick throttle
+
+'Throttle: no tank turn, just straight
+PUT s_rf_wheel, p2_y 
+PUT s_lf_wheel, p2_y
+PUT s_rb_wheel, p2_y 
+PUT s_lb_wheel, p2_y
+
+Gosub AntiTurbo
+
+return 
+
+
+'-----------------------------------------------------------------------------
+PotTests:
+
+'this is not twitch test.. just tests for extreme limits (broken pots, shorts, etc) 
+
+GET s_pot_bits, pot_bits
+
+GET s_crab_broken, tmp3  'if pots read 0, disable feedback
+if(tmp3=0) then do_ptest 'not broken
+goto ptest_done
+
+do_ptest:
+GET s_sensor1, tmp1   ' left back crab pot (left is higher) 
+GET s_sensor2, tmp2   ' left front 
+GET s_sensor3, tmp3   ' right front
+GET s_sensor4, tmp4   ' right back
+
+
+if (REDUNDANCY = ENABLED) then skip_nonred
+'----------------------------------------------------------------
+'non redundant pot test
+
+if((tmp1 > 0) and (tmp2 > 0) and (tmp1 <= 254) and (tmp2 <= 254)) then not_broken
+'else
+PUT s_crab_broken, 1  'if pots read 0, disable feedback
+not_broken: 
+'----------------------------------------------------------------
+skip_nonred:
+
+
+if (REDUNDANCY = DISABLED) then skip_redun
+'---------------------------------------------------------------
+'if(tmp1 < MIN_POT-10) or (tmp1 > MAX_POT+10) then bad1
+if(tmp1 = 0) or (tmp1 = 255) then bad1
+goto check2
+bad1:
+LBpot = 0  '0=bad, 1=good
+
+check2:
+if(tmp2 = 0) or (tmp2 = 255) then bad2
+goto check3
+bad2:
+LFpot = 0  '0=bad, 1=good
+
+check3:
+if(tmp3 = 0) or (tmp3 = 255) then bad3
+goto check4
+bad3:
+RFpot = 0  '0=bad, 1=good
+
+check4:
+if(tmp4 = 0) or (tmp4 = 255) then bad4
+goto check0done
+bad4:
+RBpot = 0  '0=bad, 1=good
+
+check0done: 
+
+
+'---redundancy logic---
+'for a face (front/back)...
+'if both sides (left/right) are bad, put the whole bot in manual override
+'if both sides (left/right) are good (F/B), proceed with delta test
+'else, skip delta test and continue. 
+
+if ((LBpot=0) and (RBpot=0)) or ((LFpot=0) and (RFpot=0)) then feedbackfailed
+goto deltatest
+
+feedbackfailed: 
+PUT s_crab_broken, 1  'disable feedback steering (manual override)
+goto ptest_done 
+
+
+'---delta stuff (if L/R difference gets too big, retest) 
+deltatest:
+
+'debug "tmp2/3 = ", dec tmp2, " ", dec tmp3, CR
+
+if ((LFpot=0) or (RFpot=0)) then end_deltafront 
+
+'if delta test has ever failed, don't rerun it (it will go forever) 
+'if (Frange_bad = 1) then check_db  'skip over test 
+
+'check Front pots
+if( abs (tmp2 - tmp3)) > 10 then bad_df
+goto check_db
+
+bad_df:
+'debug "front pots bad...", CR
+'PUT s_twitchdone, 0  'rerun the test 
+Frange_bad = 1
+PUT s_pot_bits, pot_bits
+GET s_manybits, manybits
+twitchdone = 0  'rerun
+PUT s_manybits, manybits  'save twitchdone
+
+end_deltafront: 
+
+
+if ((LBpot=0) or (RBpot=0)) then end_deltaback
+
+'if (Brange_bad = 1) then check_d_done  'skip over test 
+
+check_db: 
+'
+''check Back pots
+'if( abs (tmp1 - tmp4)) > 10 then bad_db
+'goto check_d_done
+'
+'bad_db:
+''debug "back pots bad...", CR
+''PUT s_twitchdone, 0  'rerun the test 
+'Brange_bad = 1
+'PUT s_pot_bits, pot_bits
+'GET s_manybits, manybits
+'twitchdone = 0
+'PUT s_manybits, manybits  'save twitchdone
+
+end_deltaback: 
+
+check_d_done: 
+
+ptest_done:
+
+PUT s_pot_bits, pot_bits
+'---------------------------------------------------------------
+skip_redun: 
+
+
+return
+
+
+'-----------------------------------------------------------------------------
+AuxDrive: '(the Tank treads)
+
+'kmk (move both of the AUXZONE checks up to here and jump over
+'     this whole routine if in deadzone) 
+
+'Left joystick Y is the Tank Throttle
+'Right joystick X is the Tank Turn control 
+'i.e. the opposite from crab drive. 
+
+GET s_p4_x, p4_x      ' left joystick x (left is higher) 
+GET s_p4_y, p4_y      ' left joystick 
+GET s_rc_swA, rc_swA 'robot sensors
+
+'if Not trying to Crab, allow aux drive
+if (p4_x > 127-CRABZONE) and (p4_x < 127+CRABZONE) then doaux
+
+tmp1 = 127
+tmp2 = 127
+goto aux_done
+
+doaux:
+tmp1 = p4_y  'left tank tread 
+tmp2 = p4_y
+
+
+'if tank throttle stopped, disable tank turns. (not sure this is necessary) 
+if (p4_y > 127-AUXZONE) and (p4_y < 127+AUXZONE) then auxturndone
+if p2_x > 127 then auxturnleft
+if p2_x < 127 then auxturnright
+goto auxturndone
+
+auxturnleft:
+tmp1  = (((((2000 + p4_y - p2_x + 127) Min 2000 Max 2254) - 2000)) MAX 254)
+goto auxturndone
+
+auxturnright:
+tmp2 = (((((2000 + p4_y + p2_x - 127) Min 2000 Max 2254) - 2000)) MAX 254)
+goto auxturndone
+
+auxturndone:
+
+
+'ensure that aux treads can never drive Opposite each other. give preference to PUSHING (i.e fwd). 
+if (tmp2 > 127) then limittmp1bak:
+goto cktmp1fwd
+limittmp1bak: 
+tmp1 = tmp1 MIN 127
+
+cktmp1fwd:
+if (tmp1 > 127) then limittmp2bak
+'goto cktmp2bak
+goto auxlimitdone: 
+limittmp2bak:
+tmp2 = tmp2 MIN 127
+
+auxlimitdone:
+
+
+'make MAIN DRIVE WHEELS go slow (only when aux throttle is out of the deadzone) 
+if (p4_y > 127+AUXZONE) or (p4_y < 127-AUXZONE) then slow_wheels
+goto p4_y_outofzone
+
+slow_wheels:
+'kmk maybe make this smarter DIVISION when we know how much... 
+PUT s_rf_wheel, tmp2 MIN 107 MAX 147  'drive wheels slow too
+PUT s_lf_wheel, tmp1 MIN 107 MAX 147
+PUT s_rb_wheel, tmp2 MIN 107 MAX 147
+PUT s_lb_wheel, tmp1 MIN 107 MAX 147
+
+'(no need to explicitly straighten crab wheels when the tank is 
+' _moving_ because we only move tank if crab isn't turned...) 
+
+p4_y_outofzone:
+
+aux_done:
+
+
+PUT s_aux_left, tmp1
+PUT s_aux_right, tmp2
+
+return 
+
+'-----------------------------------------------------------------------------
+
+AntiTurbo:
+
+GET s_rf_wheel, tmp1 
+GET s_lf_wheel,  tmp2
+GET s_rb_wheel, tmp3 
+GET s_lb_wheel,  tmp4
+
+'GET s_oi_swA, oi_swA  ' joystick buttons  (1 is pressed) 
+GET s_oi_swB, oi_swB  ' joystick buttons  (1 is pressed) 
+
+if (p2_sw_top = 1) then turbo1
+'else, scale speeds down
+   tmp1 = ((tmp1 * DRIVE_SCL/100) + DRIVE_CON MAX 254)
+   tmp2 = ((tmp2 * DRIVE_SCL/100) + DRIVE_CON MAX 254)
+   tmp3 = ((tmp3 * DRIVE_SCL/100) + DRIVE_CON MAX 254)
+   tmp4 = ((tmp4 * DRIVE_SCL/100) + DRIVE_CON MAX 254)
+turbo1:
+
+
+'The fisher price (rear wheel) gearings were computed incorrectly
+'on the 2002 robot, so scale them back by 3/4 in software... 
+'
+'kmk (move somewhere better...) 
+tmp3 = ((tmp3 * 3)/4)+32 MIN 32 MAX 223
+tmp4 = ((tmp4 * 3)/4)+32 MIN 32 MAX 223
+
+
+PUT s_rf_wheel, tmp1 
+PUT s_lf_wheel, tmp2
+PUT s_rb_wheel, tmp3 
+PUT s_lb_wheel, tmp4
+
+return
+
+'-----------------------------------------------------------------------------------
+Inverse: 'mirror perspective
+
+GET s_oi_swB, oi_swB  'left joy button 
+
+if p4_sw_trig = 1 then front_perspective
+if p4_sw_top = 1 then back_perspective
+goto perspective_done
+
+front_perspective:
+GET s_manybits, manybits
+perspective = 0
+PUT s_manybits, manybits  'save perspective 
+goto perspective_done:
+
+back_perspective:
+GET s_manybits, manybits
+perspective = 1
+PUT s_manybits, manybits
+goto perspective_done
+
+perspective_done:
+
+'---
+
+GET s_manybits, manybits  'get perspective
+if perspective = 0 then lauren_rules  'go forward (normal) 
+GET s_p2_x, tmp1
+GET s_p2_y, tmp2
+GET s_p4_y, tmp3
+   tmp1 = (255 - tmp1)  'right x
+   tmp2 = (255 - tmp2)  'right y
+   tmp3 = (255 - tmp3)  'left y
+PUT s_p2_x, tmp1
+PUT s_p2_y, tmp2
+PUT s_p4_y, tmp3
+
+lauren_rules:
+return
+
+'--------------------------------------------------------------------------------------
+'ZeroPoint:
+
+'(this was a weird style of spin turn where we turned the back
+' wheels sideways and used differential speeds.)
+
+''fwd wheels are slow in dir of turn
+
+'GET s_p2_x, tmp1
+''if (tmp1 > 117) and (tmp1 < 137) then straightwheels: 'don't twist wheels unless spinning.
+''(disable when controlled by trigger) 
+
+''don't turn wheels unless velocity is low (this only works if accell is enabled) 
+''GET s_cur_left, tmp3     'get a current wheel speed 
+''GET s_cur_right, tmp4
+'if (tmp3 > 137) or (tmp3 < 117) then dontspin
+
+
+'PUT s_rb_wheel, 255-tmp1
+'PUT s_lb_wheel, 255-tmp1
+''PUT s_rf_wheel, ((tmp1 / 4) + 96)
+''PUT s_lf_wheel, (((255-tmp1) / 4) + 96)
+''PUT s_rf_wheel, ((tmp1 / 2) + 64)
+'PUT s_rf_wheel, 127
+'PUT s_lf_wheel, (((255-tmp1) / 2) + 64)
+
+'PUT s_fcrab_target, 127
+'PUT s_bcrab_target, 217
+'goto zerodone
+
+'straightwheels:
+'PUT s_fcrab_target, 127
+'PUT s_bcrab_target, 127
+'PUT s_rb_wheel, 127
+'PUT s_lb_wheel, 127
+'PUT s_rf_wheel, 127
+'PUT s_lf_wheel, 127
+
+'zerodone:
+
+'dontspin:
+
+'return
+
+'--------------------------------------------------------------------------------------

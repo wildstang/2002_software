@@ -1,0 +1,745 @@
+'postdrive13apr.bsx 
+
+'{$STAMP BS2sx}
+'--------------------------------------------------------------------------------------
+
+
+'=============================================================================
+' User Constants 
+
+'Threshold points for "analog" buttons. 
+ANALOG_TO_BUTTON_HIGH CON 200   'Any value above this is considered HIGH
+
+FUEL  		CON 13  'rate of acceleration (less than 10 gets dangerous) 
+DRIVE_DEADZONE	CON 5  'joystick deadzone 
+
+DRIVE_SCL  CON 50  'turbo drive speed reduction (percent) [e.g. 50]
+DRIVE_CON  CON 64  '128 * reduction percent [e.g. 64] 
+
+'I think ranges are better than proportions (as used in 1999), because 
+'they map to the actual physical properties you're trying to model. 
+'e.g. why constantly be slowing down when you're still quite far away? 
+FAST_STEER    CON 126 'never make this > 127 
+STRONG_STEER  CON 80  'crab steering strengths 
+WEAK_STEER    CON 17
+
+'---------------
+MAX_POT  CON 252 
+'max/minimal values we allow the pot to turn. 
+'keep this greater than 0 because we rely
+'on 0/255 to indicate the pot is "broken"
+'make these conservative by a few points for safety. 
+''MIN_POT CON 40  'not used now.. just 90 degrees..
+
+'Extreme right pot is 0, usable right (90 degrees) leaves a small buffer. 
+'we usually actually want this to be a bit beyond 90 but we call it 90. 
+CRAB_RIGHT90  CON  18 
+
+POT_CENTER  CON   127  'proto
+'POT_CENTER  CON   100  'proto, supermode
+'POT_CENTER  CON   115  '*** real bot, supermode
+
+CRAB_LEFT90   CON 213  'real
+'CRAB_LEFT90   CON 195  'proto, supermode 
+'CRAB_LEFT90   CON 202  '*** real bot, supermode
+
+
+'The pot offset is used to move the effective 'center' of
+'the pot so that all the extra range is available on the left side. 
+TEMP_OFFSET CON  127-POT_CENTER 
+POT_OFFSET  CON -TEMP_OFFSET  'offset is negative so we can "add" a left offset
+
+
+
+ENABLED          CON 1 
+DISABLED         CON 0 
+
+
+GYRODRIVE  CON  DISABLED  'must be ENABLED or DISABLED 
+GYROMID    CON  113  'steady state value. const from pit, or eeprom from init. 
+HYST       CON  1    'weight value of previous gyro targets (low is most sensitive) 
+GYROBAND   CON  0    'how much spin we see before we correct 
+'            (this can probably be 0 if there is some HYST) 
+TREND_THRESHOLD  CON 3  'gyro trend count
+
+
+'=============================================================================
+'SHARED Constants (these are used by more than one bank and MUST AGREE in each) 
+
+TRUE   CON 1
+FALSE  CON 0 
+
+
+REDUNDANCY    CON  DISABLED  'must be ENABLED or DISABLED 
+
+
+'=============================================================================
+'Constants for Scratchpad ram locations [0-62] (63 reserved)
+'(these constants are shared and must agree in all banks) 
+
+'(I just reserved these in the order they come in the serin stream)
+
+s_oi_swA	CON	0	
+s_oi_swB	CON	1
+s_rc_swA	CON	2
+'s_rc_swB	CON	3
+s_p2_x	CON	4
+s_p1_x	CON	5	'stored' value of p1_x
+s_p4_x	CON	6
+s_p3_x	CON	7
+s_PB_mode	CON	8
+'s_packet_num CON	9
+s_sensor1	CON	10	
+s_sensor2	CON	11	
+s_p2_y	CON	12	
+'s_p1_y	CON	13	'
+s_sensor3	CON	14	
+s_sensor4	CON	15	
+s_p4_y	CON	16	
+'s_p3_y	CON	17	'
+s_sensor5	CON	18	
+'s_sensor6	CON	19	'
+'s_p2_wheel	CON	20	'
+s_p1_wheel	CON	21	
+'s_sensor7	CON	22	'
+s_sensor8	CON	23	'bat_volt
+'s_p4_wheel	CON	24	'
+'s_p3_wheel	CON	25	'
+'s_p2_aux	CON	26	'
+s_p1_aux	CON	27	
+'s_p4_aux	CON	28	'
+'s_p3_aux	CON	29	'
+'s_delta_t	CON	30	'
+'s_res01	CON	31	'
+'(...end of possible serin inputs.  continue now, with outputs and 
+' stored user variables.) 
+'
+' ...insert any other storage names up to 62 that are useful... 
+
+s_printloop  CON 31  'turn this into a generic loop counter that
+'can be used for any long period cycles. 
+
+
+s_gyro_trend  CON 32
+
+s_gyro_straight  CON 33  'wheel target that gyro thinks is straight 
+s_magictongue	CON 34
+
+s_loopcount CON 35 
+s_pot_bits  CON 36   'bit field of pot health 
+
+'s_tank      CON 37   'obsolete
+s_conveyor  CON 38
+s_shooter   CON 39
+
+s_relayA   CON 40
+s_relayB   CON 41
+
+s_aux_left   CON 42
+s_aux_right  CON 43
+
+s_crab_broken  CON 44  'kmk make bit pot_broken. disable proportional steering pwms if 1
+s_front_crab   CON 45 
+s_back_crab    CON 46
+s_fcrab_target  CON 47
+s_bcrab_target  CON 48
+
+s_lf_cur  CON 49
+s_rf_cur  CON 50
+s_lb_cur  CON 51
+s_rb_cur  CON 52
+
+s_lf_wheel  CON	53	'stored' value for left_wheel 
+s_rf_wheel  CON	54
+s_lb_wheel  CON   55
+s_rb_wheel  CON   56
+
+s_bat_volt  CON 57
+
+s_initialpot1  CON 58
+s_initialpot2  CON 59
+s_initialpot3  CON 60 'we COULD make these temporary to free up some memory..
+s_initialpot4  CON 61
+
+s_manybits  CON 62   'twitchdone/perspective/...
+
+s_banknumber CON 63  'Read-Only
+
+' count backwards from 62.. the last address. 
+
+
+'--------------------------------------------------------------------------------------
+
+tmp1        VAR byte	'temporary vars which are kept independent of anything else
+tmp2        VAR byte	'so they can be used _with_ anything else. 
+tmp3        VAR byte 
+tmp4        VAR byte 
+tmp5        VAR byte 
+tmp6        VAR byte 
+
+p2_x	VAR	byte	'Port 2, X-axis on Joystick
+p2_y	VAR	byte	'Port 2, Y-axis on Joystick
+p2_wheel	VAR	byte	'Port 2, Wheel on Joystick
+
+p4_x	VAR	byte	'Port 4, X-axis on Joystick
+p4_y	VAR	byte	'Port 4, Y-axis on Joystick
+'p4_wheel	VAR	byte	'Port 4, Wheel on Joystick
+
+'oi_swA	VAR byte	'OI Digital Switch Inputs 1 thru 8
+oi_swB	VAR byte	'OI Digital Switch Inputs 9 thru 16
+
+printloop  VAR byte 
+
+'---------- Aliases for each OI switch input ---------------------------------
+'  Below are aliases for the digital inputs located on the Operator Interface.
+'  Ports 1 & 3 have their inputs duplicated in ports 4 & 2 respectively.  The 
+'  inputs from ports 1 & 3 may be disabled via the 'Disable' dip switch 
+'  located on the Operator Interface.  See Users Manual for details.
+
+p2_sw_trig	VAR oi_swB.bit0	'Joystick Trigger Button
+p2_sw_top	VAR oi_swB.bit1	'Joystick Top Button
+p2_sw_aux1	VAR oi_swB.bit2	'Aux input
+p2_sw_aux2	VAR oi_swB.bit3	'Aux input
+
+p4_sw_trig	VAR oi_swB.bit4	'Joystick Trigger Button
+p4_sw_top	VAR oi_swB.bit5	'Joystick Top Button
+p4_sw_aux1	VAR oi_swB.bit6	'Aux input
+p4_sw_aux2	VAR oi_swB.bit7	'Aux input
+
+'---------- Robot Controller (RC) - Analog Inputs ----------------------------
+
+
+'---------- Operator Interface - Digital Inputs ------------------------------
+' It's probably best NOT to alias digital inputs and outputs since
+' they use memory so efficiently and have many bit names.  and it 
+' will reduce the need to PUT and GET them...
+
+
+pot_bits    VAR byte
+LBpot       VAR pot_bits.bit0  '0=ok, 1=broken 
+RBpot       VAR pot_bits.bit1
+LFpot       VAR pot_bits.bit2
+RFpot       VAR pot_bits.bit3
+Fpot_choice VAR pot_bits.bit4  '1=left, 0=right
+Bpot_choice VAR pot_bits.bit5
+
+
+manybits     VAR byte 
+twitchdone   VAR manybits.bit0
+perspective   VAR manybits.bit1
+ovridetouched VAR manybits.bit2 
+going_straight VAR manybits.bit3  '1=trying to drive straight, 0=whatever
+first_loop     VAR manybits.bit4  'TRUE = 1st pass, FALSE = forever after
+
+
+
+'---------- Misc. ------------------------------------------------------------
+
+'PB_mode	VAR byte
+
+
+'========== DEFINE ALIASES ===================================================
+
+'---------- Aliases for each OI switch input ---------------------------------
+'  Below are aliases for the digital inputs located on the Operator Interface.
+'  Ports 1 & 3 have their inputs duplicated in ports 4 & 2 respectively.  The 
+'  inputs from ports 1 & 3 may be disabled via the 'Disable' dip switch 
+'  located on the Operator Interface.  See Users Manual for details.
+
+
+'---------- Aliases for the Pbasic Mode Byte (PB_mode) -----------------------
+'  The last bit of the PB_mode byte (aliased as comp_mode) indicates the status
+'  of the Competition Control, either Enabled or Disabled.  This indicates the
+'  starting and stopping of rounds at the competitions.  Comp_mode is the same
+'  as the "Disabled" LED on the Operator Interface.
+'  Comp_mode = 1 for Enabled, 0 for Disabled.
+
+'comp_mode		VAR PB_mode.bit7
+
+
+'--------------------------------------------------------------------------------------
+
+'bank_number VAR byte
+'GET 63, bank_number 
+'debug "now running in bank ", DEC bank_number, CR 
+
+
+'=============================================================================
+
+'call DRIVE SYSTEM Routines
+
+GET s_manybits, manybits
+if (first_loop = FALSE) then nogsinit
+'debug "first_loop == TRUE", CR
+PUT s_gyro_straight, POT_CENTER     ''the target value of the front wheels to go straight
+nogsinit: 
+
+
+Gosub CrabSteering
+
+Gosub AccelSystem
+
+
+'This always needs to be the last thing before restarting the top of the main loop. 
+GET s_manybits, manybits
+first_loop = FALSE
+PUT s_manybits, manybits
+
+Run 1  'no return.. just jump back to the main program... 
+
+
+'=============================================================================
+
+'-----------------------------------------------------------------------------
+CrabSteering:  'this is the FEEDBACK loop that controls all crab steering. 
+
+'kmk maybe break this up into a couple of separate 
+'routines & rename it FeedbackSteering
+
+
+GET s_crab_broken, tmp1
+if(tmp1 = 1) then no_feedback  '0=not broken, 1=broken
+
+GET s_p3_x, tmp2  'the button for manual override (reads 127 when _broken_, so use 200 as the detect threshold) 
+if(tmp2 >= ANALOG_TO_BUTTON_HIGH) then no_feedback  'no manual button
+
+out9 = 0 'LED turn off for manual override
+
+'for pots, left (counterclockwise) values should be higher. 
+
+'get LEFT pots 
+GET s_sensor1, tmp1   ' tmp1 = back crab pot 
+GET s_sensor2, tmp2   ' tmp2 = front crab pot 
+
+
+if (REDUNDANCY = DISABLED) then skip_redun
+'---------------------------------------------------------------
+GET s_pot_bits, pot_bits
+
+if (Fpot_choice = 1) then pickLFpot   '1=left, 0=right
+'else pickRFpot
+GET s_sensor3, tmp2   ' tmp2 = front crab pot
+goto pickbackpot
+
+pickLFpot:
+GET s_sensor2, tmp2   ' tmp2 = front crab pot 
+
+pickbackpot: 
+if (Bpot_choice = 1) then pickLBpot   '1=left, 0=right
+'else pickRBpot
+GET s_sensor4, tmp1   ' tmp1 = back crab pot 
+goto pickpotdone
+
+pickLBpot:
+GET s_sensor1, tmp1   ' tmp1 = back crab pot 
+
+pickpotdone: 
+'---------------------------------------------------------------
+skip_redun: 
+
+
+
+'GET s_p4_x, p4_x      ' left joystick (left is higher) 
+GET s_fcrab_target, tmp3
+GET s_bcrab_target, tmp4
+
+
+'GET s_printloop, printloop
+'printloop = printloop+1
+'PUT s_printloop, printloop
+'if(printloop < 10) then skipbefore:
+'debug "target = ", dec tmp3, CR
+'skipbefore: 
+
+'debug "target f= ", dec tmp3, CR
+
+
+'-----[make this a subroutine called supercrab]-----
+'NOTE: this code supports "supercrab" which meant that the pots
+'could be 'centered' right of 127 (e.g. 100) so that most of the
+'headroom was on the left side (so we could turn extreme left in
+'one smooth motion). however, this doesn't necessarily support
+'setting the center left of 127.. check before attempting this. 
+
+'The right joystick trigger 'releases' the 90 degree left boundary. 
+
+'Moving the centerpoint is non-trivial for several reasons:
+'including the lack of negative numbers, and the fact that if
+'you move the center of the pot without moving the center of
+'the joystick (the trims only go so far), then you have only
+'127 points on the left side of the joystick, but say, 150 points
+'on the left side of the pot to fill.. so you have to 'amplify'
+'the left side of the joystick (remembering you also don't have
+'decimal numbers) to scale it out evenly (this wasn't coded for 
+'the right side as of this writing). 
+
+if (tmp3 > 127) then amplify_f
+tmp3 = tmp3 MIN (CRAB_RIGHT90-POT_OFFSET) + POT_OFFSET  '(offset may be negative) 
+goto ampf_done:
+
+'Offset if pot center point mounted different from 127. 
+'kmk add a MAX here too for future...
+'use Target-Offset (but don't let target be less than 0+buffer) 
+
+amplify_f:
+'tmp3 = (tmp3 * (255-POT_CENTER) / 127) MAX MAX_POT  MIN CRAB_RIGHT90
+tmp3 = (POT_CENTER + ((tmp3-127) * (255-POT_CENTER) / 127)) MAX MAX_POT  MIN CRAB_RIGHT90
+ampf_done: 
+
+'This multiplier is needed to make up for the fact that there are only 127
+'points left of center on the joystick, but more than that left of "center"
+'on the pot. 
+'(NOTE: you cannot make this ratio a constant, because it's a decimal number.)
+
+'same for back side: 
+if (tmp4 > 127) then amplify_b
+tmp4 = tmp4 MIN (CRAB_RIGHT90-POT_OFFSET) + POT_OFFSET 
+goto ampb_done:
+
+amplify_b:
+'tmp4 = (tmp4 * (255-POT_CENTER) / 127) MAX MAX_POT  MIN CRAB_RIGHT90
+tmp4 = (POT_CENTER + ((tmp4-127) * (255-POT_CENTER) / 127)) MAX MAX_POT  MIN CRAB_RIGHT90
+ampb_done: 
+
+
+'if(printloop < 10) then skipafter:
+'debug ", pot = ", dec tmp2, CR
+'debug ", after = ", dec tmp3, CR
+'PUT s_printloop, 0
+'skipafter:
+
+'5 - 10 min 3
+'(5 min 10+3) - 10 
+
+'debug "sensor2, target f= ", dec tmp2, " ", dec tmp3, CR
+'debug "sensor1/2, target b/f= ", dec tmp1, " ", dec tmp2, " ", dec tmp4, " ", dec tmp3, CR
+'debug "sensor:front/back= ", dec tmp2, " ", dec tmp1, CR
+'debug "sensor2= ", dec sensor2, " ", dec fcrab, CR  '*** 
+'---------------------------------------------------------
+
+
+
+
+'----- Gyro Correction -----
+
+if (GYRODRIVE = DISABLED) then nogyro:
+'---------------------------------------------------------
+'if turbo on and we're trying to go straight forward, use gyro straight setting. 
+
+GET s_oi_swB, oi_swB  ' joystick buttons  (1 is pressed) 
+if (p2_sw_top = 0) then nogyro  'no turbo.. no tweak
+
+'if we're not going forward, don't tweak (backward not implemented) 
+GET s_p2_y, p2_y      ' right joystick throttle
+if (p2_y < 127) then nogyro
+
+'we haven't been using an X deadzone, so we have to check a 
+'zone here to know if the driver is "trying" to go straight. 
+GET s_p2_x, p2_x
+if (p2_x > 127+DRIVE_DEADZONE) or (p2_x < 127-DRIVE_DEADZONE) then nogyro 
+
+' GET s_manybits, manybits
+' 'only update readings when we are trying to go straight... 
+' if(going_straight = 0) then nogyro  '1=trying to drive straight & forward, 0=whatever
+
+Gosub GyroCheck  'update the gyro's idea of what is straight. 
+
+'after subroutine call.. remember to re-GET stuff!!
+GET s_sensor1, tmp1   ' tmp1 = back crab pot 
+GET s_sensor2, tmp2   ' tmp2 = front crab pot 
+
+GET s_gyro_straight, tmp3   'override the front crab target with the gyro straight
+''PUT s_fcrab_target, tmp3
+
+'---------------------------------------------------------
+nogyro:
+
+
+
+
+'-----[steering feedback]-----
+'==Back Crab 
+'if joystick is higher (more left) than pot, drive pot left. 
+if (tmp1 < tmp4) then bcrab_left
+if (tmp1 > tmp4) then bcrab_right
+PUT s_back_crab, 127  'else stop steering
+goto bcrab_done:
+
+
+bcrab_left: 
+if (tmp4 - tmp1) < 2 then bcrab_stop  'close enough, stop. 
+if (tmp4 - tmp1) < 15 then bcrab_slow_left  'pretty close, slow down.
+if (tmp4 - tmp1) < 40 then bcrab_strong_left
+'else, turn fast
+PUT s_back_crab, 127+FAST_STEER 
+goto bcrab_done:
+
+bcrab_strong_left:
+PUT s_back_crab, 127+STRONG_STEER
+goto bcrab_done:
+
+bcrab_slow_left:
+PUT s_back_crab, 127+WEAK_STEER  'high turns left 
+goto bcrab_done
+
+
+bcrab_right: 
+if (tmp1 - tmp4) < 2 then bcrab_stop  'close enough, stop. 
+if (tmp1 - tmp4) < 15 then bcrab_slow_right  'pretty close, slow down. 
+if (tmp1 - tmp4) < 40 then bcrab_strong_right
+'else, turn fast
+PUT s_back_crab, 127-FAST_STEER
+goto bcrab_done:
+
+bcrab_strong_right:
+PUT s_back_crab, 127-STRONG_STEER
+goto bcrab_done:
+
+bcrab_slow_right:
+PUT s_back_crab, 127-WEAK_STEER  'low turns right 
+goto bcrab_done
+
+
+bcrab_stop:
+PUT s_back_crab, 127 
+goto bcrab_done:
+
+bcrab_done: 
+
+
+
+'==Front Crab 
+'if joystick is higher (more left) than pot, drive pot left. 
+if (tmp2 < tmp3) then fcrab_left
+if (tmp2 > tmp3) then fcrab_right
+PUT s_front_crab, 127  'else stop steering
+goto fcrab_done:
+
+
+fcrab_left: 
+if (tmp3 - tmp2) < 2 then fcrab_stop  'close enough, stop. 
+if (tmp3 - tmp2) < 15 then fcrab_slow_left  'pretty close, slow down.
+if (tmp3 - tmp2) < 40 then fcrab_strong_left
+'else, turn fast
+PUT s_front_crab, 127+FAST_STEER 
+goto fcrab_done:
+
+fcrab_strong_left:
+PUT s_front_crab, 127+STRONG_STEER
+goto fcrab_done:
+
+fcrab_slow_left:
+PUT s_front_crab, 127+WEAK_STEER  'high turns left 
+goto fcrab_done
+
+
+fcrab_right: 
+if (tmp2 - tmp3) < 2 then fcrab_stop  'close enough, stop. 
+if (tmp2 - tmp3) < 15 then fcrab_slow_right  'pretty close, slow down. 
+if (tmp2 - tmp3) < 40 then fcrab_strong_right
+'else, turn fast
+PUT s_front_crab, 127-FAST_STEER
+goto fcrab_done:
+
+fcrab_strong_right:
+PUT s_front_crab, 127-STRONG_STEER  'low turns right 
+goto fcrab_done:
+
+fcrab_slow_right:
+PUT s_front_crab, 127-WEAK_STEER  'low turns right 
+goto fcrab_done
+
+
+fcrab_stop:
+PUT s_front_crab, 127 
+goto fcrab_done:
+
+fcrab_done: 
+
+
+Gosub crab_limits: ' stop motor if too far 
+
+no_feedback: 
+
+return
+
+
+'-----------------------------------------------------------------------------
+crab_limits:
+
+GET s_sensor1, tmp1    'back crab pot, left is higher 
+GET s_sensor2, tmp2    'front crab pot 
+
+GET s_front_crab, tmp3  'left is higher 
+GET s_back_crab, tmp4 
+
+
+if (REDUNDANCY = DISABLED) then continue_foo
+debug CR, "need to finish crab_limits for redundant pot choice...", CR
+continue_foo:
+
+
+'if we are past the right boundary and going right then stop
+if (tmp1 <= CRAB_RIGHT90) and (tmp4 < 127) then stop_bcrab
+
+'if right trigger is pressed, allow crab to go left beyond 90 degrees
+GET s_oi_swB, oi_swB  ' joystick buttons  (1 is pressed) 
+if (p2_sw_trig = 1) then extra_bleft
+
+'if we are past the left boundary and going left then stop
+if (tmp1 >= CRAB_LEFT90) and (tmp4 > 127) then stop_bcrab
+goto bclimit_done
+
+extra_bleft:
+if (tmp1 >= MAX_POT) and (tmp4 > 127) then stop_bcrab
+goto bclimit_done
+
+stop_bcrab:
+PUT s_back_crab, 127
+
+bclimit_done:
+
+
+'same for front wheels...
+if (tmp2 <= CRAB_RIGHT90 ) and (tmp3 < 127) then stop_fcrab
+
+if (p2_sw_trig = 1) then extra_fleft
+
+if (tmp2 >= CRAB_LEFT90) and (tmp3 > 127) then stop_fcrab
+goto fclimit_done
+
+extra_fleft:
+if (tmp2 >= MAX_POT) and (tmp3 > 127) then stop_fcrab
+goto fclimit_done
+
+stop_fcrab:
+PUT s_front_crab, 127
+
+
+fclimit_done:
+
+return
+
+
+'-----------------------------------------------------------------------------
+AccelSystem:
+
+'Acceleration/Braking/Coasting control 
+'this limits the rate that the speed changes (and braking)
+'which can help smooth out control, and limit the worst case
+'current draw when e.g. going from full forward to full reverse. 
+
+GET s_lf_wheel, tmp1   'get intended wheel speed (target) 
+GET s_lf_cur, tmp2     'get current wheel speed 
+'debug "target = ", dec tmp1
+'debug " current = ", dec tmp2, CR
+gosub accelroutine:
+PUT s_lf_cur, tmp2
+
+GET s_rf_wheel, tmp1
+GET s_rf_cur, tmp2
+gosub accelroutine:
+PUT s_rf_cur, tmp2
+
+GET s_lb_wheel, tmp1
+GET s_lb_cur, tmp2
+gosub accelroutine:
+PUT s_lb_cur, tmp2
+
+GET s_rb_wheel, tmp1
+GET s_rb_cur, tmp2
+gosub accelroutine:
+PUT s_rb_cur, tmp2
+
+return  'return from accelsystem
+
+
+'-------------------
+accelroutine:
+
+'if current speed is far from target speed continue, else.. 
+'set it exactly to target speed (helps us come to a complete stop) 
+if( (tmp2 > (tmp1+FUEL)) or (tmp2 < (tmp1-FUEL)) ) then continue
+tmp2 = tmp1 
+goto acc_done
+
+continue:
+'if current < target then add speed to wheel
+if(tmp2 < tmp1) then add:
+goto checksub
+
+add:
+tmp2 = (tmp2 + FUEL) MAX 254  'add to the current speed (velocity) 
+goto acc_done:
+
+checksub: 
+if(tmp2 > tmp1) then sub:
+goto acc_done 
+
+sub:
+tmp2 = ((tmp2 MIN FUEL) - FUEL)  'subtract from the current speed
+
+acc_done:
+
+return  'return from accelroutine
+
+
+'--------------------------------------------------------------------------------------
+GyroCheck:  'update the gyro's idea of what is straight. 
+
+'The Gyro is _Opposite_ of joystick and pots, i.e. left is lower, right is higher. 
+'(so this means the _correction_ should be directly proportional) 
+
+GET s_sensor5, tmp1       'the current gyro reading
+'debug "gyro = ", dec tmp1
+
+GET s_gyro_straight, tmp3 'the wheel angle needed for zero turn rate. 
+GET s_gyro_trend, tmp4  '127 is no trend, left is higher (like pots) 
+
+tmp2 = tmp3  'tmp3 is "previous" value, tmp2 is new value. 
+
+'if turning right, tweak _front_ wheels left one tick: 
+if tmp1 < (GYROMID-GYROBAND) then tweakright
+if tmp1 > (GYROMID+GYROBAND) then tweakleft
+goto tweakdone:
+
+tweakleft: 
+tmp4 = tmp4+1  'trending right
+if (tmp4 < 127+TREND_THRESHOLD) then tweakdone: 
+tmp4 = 127     'reset trend
+tmp2 = tmp3+1 MAX CRAB_LEFT90  'turn the wheel center left by one pot tick
+goto tweakdone:
+
+tweakright: 
+tmp4 = tmp4-1  'trending left
+if (tmp4 > 127-TREND_THRESHOLD) then tweakdone: 
+tmp4 = 127     'reset trend
+tmp2 = (tmp3 MIN CRAB_RIGHT90)-1  'lower pot values turn right. 
+goto tweakdone:
+
+tweakdone: 
+
+'weighted average to make the adjustments less sensitive
+'tmp2 = (tmp2 + (tmp3 * HYST)) / (HYST+1)
+'tmp2 = ((tmp2*10 + (tmp3*10 * HYST)) / (HYST+1)*10) / 10
+
+'kmk: when gyro is ->200, why is straight ->50?  ?integer truncation?  3/2 = 1
+'band keeps it from creeping down when straight? 
+
+
+PUT s_gyro_straight, tmp2
+PUT s_gyro_trend, tmp4
+
+'debug "gyro = ", dec tmp1
+'debug "  straight = ", dec tmp2
+'debug CR
+
+
+notweak:
+'debug CR
+
+return
+'--------------------------------------------------------------------------------------
+
+
+'--------------------------------------------------------------------------------------
